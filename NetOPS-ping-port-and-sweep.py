@@ -57,28 +57,34 @@ def ping(ip):
     except:
         return False
 
-#def resolve_hostname(ip):
-    try:
-        return socket.gethostbyaddr(str(ip))[0]
-    except:
-        return "No Hostname"
 
-def resolve_hostname(ip):
+def resolve_hostname(ip, use_local=False, custom_dns=None):
     try:
-        # Ensure the IP is a string
         ip_str = str(ip)
-
-        # Convert IP to reverse DNS name
         rev_name = dns.reversename.from_address(ip_str)
-        
-        # Create a custom resolver and set nameservers
+
         resolver = dns.resolver.Resolver()
-        resolver.nameservers = ['8.8.8.8', '8.8.4.4']
-        
-        # Perform the PTR lookup
+        resolver.lifetime = 3.0
+
+        if custom_dns:
+            # Resolve hostnames to IPs if needed
+            valid_dns = []
+            for dns_entry in custom_dns:
+                try:
+                    # If it's already an IP, this just returns it
+                    resolved = socket.gethostbyname(dns_entry)
+                    valid_dns.append(resolved)
+                except socket.gaierror:
+                    continue  # skip invalid DNS entries
+            if valid_dns:
+                resolver.nameservers = valid_dns
+        elif not use_local:
+            resolver.nameservers = ['8.8.8.8', '8.8.4.4']
+        # else use system defaults
+
         answer = resolver.resolve(rev_name, "PTR")
-        return str(answer[0])
-    
+        return str(answer[0]).rstrip('.')
+
     except (dns.resolver.NXDOMAIN, dns.resolver.Timeout, dns.resolver.NoNameservers):
         return "No Hostname"
     except Exception as e:
@@ -107,13 +113,15 @@ def scan_ports_multithreaded(ip, ports):
                 open_ports.append(result)
     return open_ports
 
-def scan_ip(ip, ports, scan_ports_enabled, listbox, results, progress_var):
+def scan_ip(ip, ports, scan_ports_enabled, listbox, results, progress_var, use_local_dns, custom_dns_str):
     global stop_scan
     if stop_scan:
         return
 
     alive = ping(ip)
-    hostname = resolve_hostname(ip) if alive else "-"
+    custom_dns = [dns.strip() for dns in custom_dns_str.split(',') if dns.strip()]
+    hostname = resolve_hostname(ip, use_local=use_local_dns, custom_dns=custom_dns) if alive else "-"
+
     open_ports = scan_ports_multithreaded(ip, ports) if alive and scan_ports_enabled else []
 
     status = "live" if alive else "Not Responding"
@@ -141,9 +149,10 @@ def scan_ip(ip, ports, scan_ports_enabled, listbox, results, progress_var):
         "Open Ports": port_str if scan_ports_enabled else "N/A"
     })
 
-    progress_var.set(progress_var.get() + 1)
+    listbox.after(0, lambda: progress_var.set(progress_var.get() + 1))
 
-def start_scan(mode, start_ip, end_ip, cidr, ports, scan_ports_enabled, listbox, scan_button, cancel_button, export_button, progress_bar):
+
+def start_scan(mode, start_ip, end_ip, cidr, ports, scan_ports_enabled, listbox, scan_button, cancel_button, export_button, progress_bar, use_local_dns, custom_dns_str):
     global stop_scan
     stop_scan = False
     scan_button.config(state=tk.DISABLED)
@@ -186,7 +195,7 @@ def start_scan(mode, start_ip, end_ip, cidr, ports, scan_ports_enabled, listbox,
         for ip in ip_range:
             if stop_scan:
                 break
-            scan_ip(ip, ports, scan_ports_enabled, listbox, results, progress_var)
+            scan_ip(ip, ports, scan_ports_enabled, listbox, results, progress_var, use_local_dns, custom_dns_str)
         scan_button.config(state=tk.NORMAL)
         cancel_button.config(state=tk.DISABLED)
         export_button.config(state=tk.NORMAL)
@@ -260,6 +269,21 @@ def create_gui():
     port_scan_checkbox = tk.Checkbutton(root, text="Enable Port Scanning", variable=port_scan_enabled)
     port_scan_checkbox.grid(row=5, column=1, sticky="w", padx=5, pady=2)
 
+    # DNS resolution options
+    use_local_dns = tk.BooleanVar(value=False)
+
+    dns_checkbox = tk.Checkbutton(root, text="Use Local DNS (System Default)", variable=use_local_dns)
+    dns_checkbox.grid(row=6, column=1, sticky="w", padx=5, pady=2)
+
+    # Get system DNS servers and format them as comma-separated
+    default_dns_list = dns.resolver.Resolver().nameservers
+    default_dns_str = ", ".join(default_dns_list)
+
+    tk.Label(root, text="Custom DNS (comma-separated):").grid(row=7, column=0, sticky="e", padx=5, pady=5)
+    dns_entry = tk.Entry(root, width=30)
+    dns_entry.insert(0, default_dns_str)
+    dns_entry.grid(row=7, column=1, sticky="w", padx=5, pady=5)
+
     listbox = tk.Listbox(root, font=("Courier", 10))
     listbox.grid(row=8, column=0, columnspan=3, sticky="nsew", padx=5, pady=5)
 
@@ -278,7 +302,7 @@ def create_gui():
                                                        end_ip_entry.get(), cidr_entry.get(),
                                                        ports_entry.get(), port_scan_enabled.get(),
                                                        listbox, scan_button, cancel_button,
-                                                       export_button, progress_bar))
+                                                       export_button, progress_bar, use_local_dns.get(),dns_entry.get()))
     scan_button.pack(side="left", padx=5)
 
     cancel_button = tk.Button(button_frame, text="Cancel", width=15, state=tk.DISABLED,
@@ -290,7 +314,7 @@ def create_gui():
     export_button.pack(side="left", padx=5)
     export_button.results = []
 
-    exit_button = tk.Button(button_frame, text="Exit", width=15, command=root.quit)
+    exit_button = tk.Button(button_frame, text="Exit", width=15, command=root.destroy)
     exit_button.pack(side="left", padx=5)
 
     root.mainloop()
